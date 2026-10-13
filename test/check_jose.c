@@ -344,8 +344,11 @@ START_TEST(test_jwks_resolve_uri)
 	ck_assert_ptr_eq(rv, NULL);
 
 	ptr = (oauth2_jose_jwt_verify_ctx_t *)verify->ctx->ptr;
+	oauth2_token_verify_result_t result = {
+	    OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED, 0, OAUTH2_HTTP_CALL_OK};
+	oauth2_time_t generation = UINT64_MAX;
 	list = ptr->jwks_provider->resolve(_log, ptr->jwks_provider, &refresh,
-					   NULL);
+					   NULL, &result, &generation);
 	ck_assert_ptr_ne(list, NULL);
 
 	oauth2_check_http_server_stop(srv);
@@ -368,8 +371,11 @@ START_TEST(test_jwk_resolve_plain)
 	ck_assert_ptr_eq(rv, NULL);
 
 	ptr = (oauth2_jose_jwt_verify_ctx_t *)verify->ctx->ptr;
+	oauth2_token_verify_result_t result = {
+	    OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED, 0, OAUTH2_HTTP_CALL_OK};
+	oauth2_time_t generation = UINT64_MAX;
 	list = ptr->jwks_provider->resolve(_log, ptr->jwks_provider, &refresh,
-					   NULL);
+					   NULL, &result, &generation);
 	ck_assert_ptr_ne(list, NULL);
 
 	oauth2_jose_jwk_list_free(_log, list);

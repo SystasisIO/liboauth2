@@ -26,6 +26,12 @@
 #include "oauth2_int.h"
 #include <check.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <unistd.h>
+#endif
 
 static oauth2_log_t *_log = 0;
 
@@ -1487,6 +1493,349 @@ START_TEST(test_oauth2_verify_token_status_code)
 }
 END_TEST
 
+START_TEST(test_oauth2_verify_endpoint_results)
+{
+	oauth2_cfg_token_verify_t *verify = NULL;
+	json_t *payload = NULL;
+	oauth2_http_status_code_t status;
+	oauth2_token_verify_result_t result;
+	char *error;
+	oauth2_check_http_response_t replies[] = {
+	    {.status_code = 401, .body = "{\"active\":true}"},
+	    {.status_code = 503, .body = "{\"active\":true}"},
+	    {.status_code = 200, .body = "{\"active\":false}"},
+	    {.status_code = 200, .body = ""},
+	    {.status_code = 200, .body = "{\"active\":true}"},
+	    {.status_code = 200, .body = "{\"active\":false}"}};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start_seq(replies, 6);
+	ck_assert_ptr_ne(srv, NULL);
+	error = oauth2_cfg_token_verify_add_options(
+	    NULL, &verify, "introspect", oauth2_check_http_server_url(srv),
+	    "verify.cache=none&introspect.http_follow_redirects=false&"
+	    "introspect.http_timeout=1&introspect.http_retries=0");
+	ck_assert_ptr_eq(error, NULL);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify,
+						"endpoint-401", &payload, NULL,
+						&result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_HTTP_ERROR);
+	ck_assert_int_eq(result.status_code, 401);
+	ck_assert_int_eq(result.http_error, OAUTH2_HTTP_CALL_OK);
+	ck_assert_ptr_eq(payload, NULL);
+	ck_assert_int_eq(oauth2_token_verify(NULL, NULL, verify, "endpoint-503",
+					     &payload, NULL),
+			 false);
+	ck_assert_ptr_eq(payload, NULL);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, "inactive",
+						&payload, &status, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED);
+	ck_assert_int_eq(result.status_code, 200);
+	ck_assert_int_eq(status, 401);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, "empty",
+						&payload, &status, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_MALFORMED_RESPONSE);
+	ck_assert_int_eq(result.status_code, 200);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify,
+						"same-token", &payload, NULL,
+						&result),
+			 true);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_SUCCESS);
+	json_decref(payload);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify,
+						"same-token", &payload, NULL,
+						&result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 6);
+	oauth2_check_http_server_stop(srv);
+	oauth2_cfg_token_verify_free(NULL, verify);
+}
+END_TEST
+
+START_TEST(test_oauth2_verify_jwks_failure_and_cache)
+{
+	/* Fabricated symmetric fixture keys, never real issuer credentials. */
+	const char *key_json =
+	    "{\"kty\":\"oct\",\"k\":"
+	    "\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\"}";
+	const char *jwks = "{\"keys\":[{\"kty\":\"oct\",\"k\":"
+			   "\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\"}]}";
+	const char *other_key_json =
+	    "{\"kty\":\"oct\",\"k\":"
+	    "\"ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA\"}";
+	cjose_err err;
+	cjose_jwk_t *key = cjose_jwk_import(key_json, strlen(key_json), &err);
+	cjose_jwk_t *other =
+	    cjose_jwk_import(other_key_json, strlen(other_key_json), &err);
+	char *first, *second, *unknown, *error;
+	oauth2_cfg_token_verify_t *verify = NULL;
+	oauth2_token_verify_result_t result;
+	oauth2_http_status_code_t status;
+	json_t *payload = NULL;
+	oauth2_check_http_response_t replies[] = {
+	    {.status_code = 503, .body = jwks},
+	    {.status_code = 200, .body = jwks},
+	    {.status_code = 503, .body = jwks}};
+	ck_assert_ptr_ne(key, NULL);
+	ck_assert_ptr_ne(other, NULL);
+	first = oauth2_jwt_create(NULL, key, "HS256", NULL, "first", NULL, NULL,
+				  60, false, false, NULL);
+	second = oauth2_jwt_create(NULL, key, "HS256", NULL, "second", NULL,
+				   NULL, 60, false, false, NULL);
+	unknown = oauth2_jwt_create(NULL, other, "HS256", NULL, "unknown", NULL,
+				    NULL, 60, false, false, NULL);
+	ck_assert_ptr_ne(first, NULL);
+	ck_assert_ptr_ne(second, NULL);
+	ck_assert_ptr_ne(unknown, NULL);
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start_seq(replies, 3);
+	ck_assert_ptr_ne(srv, NULL);
+	error = oauth2_cfg_token_verify_add_options(
+	    NULL, &verify, "jwks_uri", oauth2_check_http_server_url(srv),
+	    "verify.cache=none&jwks_uri.http_follow_redirects=false&"
+	    "jwks_uri.http_retries=0");
+	ck_assert_ptr_eq(error, NULL);
+	/* A valid key body under 503 must never reach signature verification.
+	 */
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, first,
+						&payload, NULL, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_HTTP_ERROR);
+	ck_assert_int_eq(result.status_code, 503);
+	ck_assert_ptr_eq(payload, NULL);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, first,
+						&payload, &status, &result),
+			 true);
+	json_decref(payload);
+	/* A different token forces signature validation against cached keys. */
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, second,
+						&payload, NULL, &result),
+			 true);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_SUCCESS);
+	ck_assert_int_eq(result.status_code, 0);
+	json_decref(payload);
+	/* Cache-hit rejection refreshes keys; 503 must survive this second
+	 * load. */
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, unknown,
+						&payload, &status, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_HTTP_ERROR);
+	ck_assert_int_eq(result.status_code, 503);
+	ck_assert_int_eq(status, 503);
+	ck_assert_ptr_eq(payload, NULL);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 3);
+	oauth2_check_http_server_stop(srv);
+	oauth2_cfg_token_verify_free(NULL, verify);
+	oauth2_mem_free(first);
+	oauth2_mem_free(second);
+	oauth2_mem_free(unknown);
+	cjose_jwk_release(key);
+	cjose_jwk_release(other);
+}
+END_TEST
+
+static char *_oauth2_check_resource_jwt(void)
+{
+	const char *json = "{\"kty\":\"oct\",\"k\":"
+			   "\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\"}";
+	cjose_err err;
+	cjose_jwk_t *key = cjose_jwk_import(json, strlen(json), &err);
+	ck_assert_ptr_ne(key, NULL);
+	char *token = oauth2_jwt_create(NULL, key, "HS256", NULL, NULL, NULL,
+					NULL, 60, false, false, NULL);
+	cjose_jwk_release(key);
+	ck_assert_ptr_ne(token, NULL);
+	return token;
+}
+
+START_TEST(test_oauth2_verify_jwks_key_limit)
+{
+	char *token = _oauth2_check_resource_jwt();
+	oauth2_cfg_token_verify_t *verify = NULL;
+	oauth2_token_verify_result_t result;
+	json_t *payload = NULL;
+	oauth2_check_http_response_t reply = {
+	    .status_code = 200,
+	    .body = "{\"keys\":[{\"kty\":\"oct\",\"k\":"
+		    "\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\"},"
+		    "{\"use\":\"enc\",\"kty\":\"oct\",\"k\":"
+		    "\"ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA\"}]}"};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	ck_assert_ptr_eq(
+	    oauth2_cfg_token_verify_add_options(
+		NULL, &verify, "jwks_uri", oauth2_check_http_server_url(srv),
+		"verify.cache=none&jwks_uri.cache=none&jwks_uri.max_keys=1"),
+	    NULL);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, token,
+						&payload, NULL, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_KEY_LIMIT);
+	ck_assert_int_eq(result.status_code, 200);
+	ck_assert_int_eq(result.http_error, OAUTH2_HTTP_CALL_OK);
+	ck_assert_ptr_eq(payload, NULL);
+	oauth2_cfg_token_verify_free(NULL, verify);
+	oauth2_check_http_server_stop(srv);
+	oauth2_mem_free(token);
+}
+END_TEST
+
+START_TEST(test_oauth2_verify_jwks_refresh_controls)
+{
+	const char *jwks = "{\"keys\":[{\"kty\":\"oct\",\"k\":"
+			   "\"ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA\"}]}";
+	char *token = _oauth2_check_resource_jwt();
+	oauth2_cfg_token_verify_t *verify = NULL, *clone;
+	oauth2_token_verify_result_t result;
+	json_t *payload = NULL;
+	oauth2_check_http_response_t replies[] = {
+	    {.status_code = 200, .body = jwks},
+	    {.status_code = 503, .body = jwks}};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start_seq(replies, 2);
+	ck_assert_ptr_ne(srv, NULL);
+	ck_assert_ptr_eq(
+	    oauth2_cfg_token_verify_add_options(
+		NULL, &verify, "jwks_uri", oauth2_check_http_server_url(srv),
+		"verify.cache=none&jwks_uri.max_keys=1&jwks_uri.refresh_"
+		"interval=1&"
+		"jwks_uri.refresh_wait_timeout=100&jwks_uri.http_retries=0"),
+	    NULL);
+	clone = oauth2_cfg_token_verify_clone(NULL, verify);
+	ck_assert_ptr_ne(clone, NULL);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, token,
+						&payload, NULL, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED);
+	/* An unknown key immediately after the attempt does not fetch again. */
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, clone, token,
+						&payload, NULL, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED);
+#ifdef _WIN32
+	Sleep(1100);
+#else
+	usleep(1100000);
+#endif
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, clone, token,
+						&payload, NULL, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_HTTP_ERROR);
+	ck_assert_int_eq(result.status_code, 503);
+	oauth2_cfg_token_verify_free(NULL, verify);
+	/* Failure evidence and cooldown survive destruction of the original. */
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, clone, token,
+						&payload, NULL, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_HTTP_ERROR);
+	ck_assert_int_eq(result.status_code, 503);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 2);
+	oauth2_check_http_server_stop(srv);
+	oauth2_cfg_token_verify_free(NULL, clone);
+	oauth2_mem_free(token);
+}
+END_TEST
+
+#ifndef _WIN32
+typedef struct _oauth2_check_resource_call_t {
+	oauth2_cfg_token_verify_t *verify;
+	const char *token;
+	bool rc;
+	oauth2_token_verify_result_t result;
+} _oauth2_check_resource_call_t;
+
+static void *_oauth2_check_resource_call(void *ptr)
+{
+	_oauth2_check_resource_call_t *call = ptr;
+	json_t *payload = NULL;
+	call->rc = oauth2_token_verify_ex(NULL, NULL, call->verify, call->token,
+					  &payload, NULL, &call->result);
+	if (payload)
+		json_decref(payload);
+	return NULL;
+}
+
+START_TEST(test_oauth2_verify_jwks_coalescing)
+{
+	char *token = _oauth2_check_resource_jwt();
+	oauth2_cfg_token_verify_t *verify = NULL;
+	oauth2_check_http_response_t reply = {
+	    .status_code = 200,
+	    .delay_ms = 100,
+	    .body = "{\"keys\":[{\"kty\":\"oct\",\"k\":"
+		    "\"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY\"}]}"};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	ck_assert_ptr_eq(
+	    oauth2_cfg_token_verify_add_options(
+		NULL, &verify, "jwks_uri", oauth2_check_http_server_url(srv),
+		"verify.cache=none&jwks_uri.max_keys=1&jwks_uri.refresh_"
+		"interval=10&"
+		"jwks_uri.refresh_wait_timeout=2000&jwks_uri.http_timeout=1&"
+		"jwks_uri.http_retries=0"),
+	    NULL);
+	_oauth2_check_resource_call_t calls[4];
+	pthread_t threads[4];
+	int i;
+	for (i = 0; i < 4; i++) {
+		calls[i].verify = oauth2_cfg_token_verify_clone(NULL, verify);
+		calls[i].token = token;
+		ck_assert_ptr_ne(calls[i].verify, NULL);
+		ck_assert_int_eq(pthread_create(&threads[i], NULL,
+						_oauth2_check_resource_call,
+						&calls[i]),
+				 0);
+	}
+	for (i = 0; i < 4; i++) {
+		ck_assert_int_eq(pthread_join(threads[i], NULL), 0);
+		ck_assert_int_eq(calls[i].rc, true);
+		ck_assert_int_eq(calls[i].result.kind,
+				 OAUTH2_TOKEN_VERIFY_SUCCESS);
+		oauth2_cfg_token_verify_free(NULL, calls[i].verify);
+	}
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 1);
+	oauth2_check_http_server_stop(srv);
+	oauth2_cfg_token_verify_free(NULL, verify);
+	oauth2_mem_free(token);
+}
+END_TEST
+#endif
+
+START_TEST(test_oauth2_verify_endpoint_timeout)
+{
+	oauth2_cfg_token_verify_t *verify = NULL;
+	oauth2_token_verify_result_t result;
+	oauth2_http_status_code_t status;
+	json_t *payload = NULL;
+	char *error;
+	oauth2_check_http_response_t reply = {
+	    .status_code = 200, .body = "{\"active\":true}", .delay_ms = 1500};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	error = oauth2_cfg_token_verify_add_options(
+	    NULL, &verify, "introspect", oauth2_check_http_server_url(srv),
+	    "verify.cache=none&introspect.http_timeout=1&introspect.http_"
+	    "retries=5");
+	ck_assert_ptr_eq(error, NULL);
+	ck_assert_int_eq(oauth2_token_verify_ex(NULL, NULL, verify, "timeout",
+						&payload, &status, &result),
+			 false);
+	ck_assert_int_eq(result.kind, OAUTH2_TOKEN_VERIFY_TIMEOUT);
+	ck_assert_int_eq(result.http_error, OAUTH2_HTTP_CALL_TIMEOUT);
+	ck_assert_int_eq(result.status_code, 0);
+	ck_assert_int_eq(status, 504);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 1);
+	oauth2_check_http_server_stop(srv);
+	oauth2_cfg_token_verify_free(NULL, verify);
+}
+END_TEST
+
 START_TEST(test_oauth2_verify_token_plain)
 {
 	bool rc = false;
@@ -1878,6 +2227,14 @@ Suite *oauth2_check_oauth2_suite()
 	tcase_add_test(c, test_oauth2_verify_aws_alb);
 	tcase_add_test(c, test_oauth2_verify_token_introspection);
 	tcase_add_test(c, test_oauth2_verify_token_status_code);
+	tcase_add_test(c, test_oauth2_verify_endpoint_results);
+	tcase_add_test(c, test_oauth2_verify_jwks_failure_and_cache);
+	tcase_add_test(c, test_oauth2_verify_endpoint_timeout);
+	tcase_add_test(c, test_oauth2_verify_jwks_key_limit);
+	tcase_add_test(c, test_oauth2_verify_jwks_refresh_controls);
+#ifndef _WIN32
+	tcase_add_test(c, test_oauth2_verify_jwks_coalescing);
+#endif
 	tcase_add_test(c, test_oauth2_verify_token_plain);
 	tcase_add_test(c, test_oauth2_verify_token_base64);
 	tcase_add_test(c, test_oauth2_verify_token_base64url);

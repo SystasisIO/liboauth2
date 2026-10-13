@@ -558,6 +558,37 @@ OAUTH2_TYPE_DECLARE_MEMBER_SET(http, call_ctx, retries, int)
 OAUTH2_TYPE_DECLARE_MEMBER_SET(http, call_ctx, retry_interval, int)
 /** @brief Whether to verify the server's TLS certificate and hostname. */
 OAUTH2_TYPE_DECLARE_MEMBER_SET(http, call_ctx, ssl_verify, bool)
+/** @brief Follow redirects; default true. Set before sending credentials. */
+OAUTH2_TYPE_DECLARE_MEMBER_SET(http, call_ctx, follow_redirects, bool)
+/** @brief Maximum redirects; default 5, zero forbids following any. */
+OAUTH2_TYPE_DECLARE_MEMBER_SET(http, call_ctx, max_redirects, int)
+/** @brief Maximum response bytes before parsing; default 1 MiB. */
+OAUTH2_TYPE_DECLARE_MEMBER_SET(http, call_ctx, max_response_bytes,
+			       oauth2_uint_t)
+OAUTH2_TYPE_DECLARE_MEMBER_GET(http, call_ctx, timeout, int)
+OAUTH2_TYPE_DECLARE_MEMBER_GET(http, call_ctx, retries, int)
+OAUTH2_TYPE_DECLARE_MEMBER_GET(http, call_ctx, retry_interval, int)
+OAUTH2_TYPE_DECLARE_MEMBER_GET(http, call_ctx, follow_redirects, bool)
+OAUTH2_TYPE_DECLARE_MEMBER_GET(http, call_ctx, max_redirects, int)
+OAUTH2_TYPE_DECLARE_MEMBER_GET(http, call_ctx, max_response_bytes,
+			       oauth2_uint_t)
+
+typedef enum oauth2_http_call_error_t {
+	OAUTH2_HTTP_CALL_OK,
+	OAUTH2_HTTP_CALL_TRANSPORT_ERROR,
+	OAUTH2_HTTP_CALL_TIMEOUT,
+	OAUTH2_HTTP_CALL_RESPONSE_TOO_LARGE,
+	OAUTH2_HTTP_CALL_REDIRECT_LIMIT,
+	OAUTH2_HTTP_CALL_INTERNAL_ERROR
+} oauth2_http_call_error_t;
+
+/** Per-call evidence, with no borrowed strings or context-owned error state.
+ * status_code is the received HTTP status (0 before headers), not synthetic
+ * 504. HTTP 4xx/5xx is still a successful transport call with error == OK. */
+typedef struct oauth2_http_call_result_t {
+	oauth2_http_call_error_t error;
+	oauth2_http_status_code_t status_code;
+} oauth2_http_call_result_t;
 /**
  * @brief Cookies to send with the call in a Cookie header, names and
  *        values URL-encoded and joined with "; ".
@@ -646,6 +677,27 @@ bool oauth2_http_post_json(oauth2_log_t *log, const char *url,
 			   const json_t *json, oauth2_http_call_ctx_t *ctx,
 			   char **response,
 			   oauth2_http_status_code_t *status_code);
+/** Extended calls preserve the bool/status contract and fill optional result.
+ */
+bool oauth2_http_call_ex(oauth2_log_t *log, const char *url, const char *data,
+			 oauth2_http_call_ctx_t *ctx, char **response,
+			 oauth2_http_status_code_t *status_code,
+			 oauth2_http_call_result_t *result);
+bool oauth2_http_get_ex(oauth2_log_t *log, const char *url,
+			const oauth2_nv_list_t *params,
+			oauth2_http_call_ctx_t *ctx, char **response,
+			oauth2_http_status_code_t *status_code,
+			oauth2_http_call_result_t *result);
+bool oauth2_http_post_form_ex(oauth2_log_t *log, const char *url,
+			      const oauth2_nv_list_t *params,
+			      oauth2_http_call_ctx_t *ctx, char **response,
+			      oauth2_http_status_code_t *status_code,
+			      oauth2_http_call_result_t *result);
+bool oauth2_http_post_json_ex(oauth2_log_t *log, const char *url,
+			      const json_t *json, oauth2_http_call_ctx_t *ctx,
+			      char **response,
+			      oauth2_http_status_code_t *status_code,
+			      oauth2_http_call_result_t *result);
 /** @} */
 
 /**

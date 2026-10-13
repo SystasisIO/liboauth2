@@ -50,7 +50,11 @@ typedef struct oauth2_cfg_endpoint_t {
 	oauth2_uint_t http_timeout;
 	oauth2_uint_t http_retries;
 	oauth2_uint_t http_retry_interval;
+	oauth2_flag_t http_follow_redirects;
+	oauth2_uint_t http_max_redirects;
+	oauth2_uint_t http_max_response_bytes;
 	char *outgoing_proxy;
+	char *ca_info;
 } oauth2_cfg_endpoint_t;
 
 /*
@@ -150,7 +154,8 @@ typedef struct oauth2_cfg_ctx_funcs_t {
 
 typedef bool(oauth2_cfg_token_verify_cb_t)(
     oauth2_log_t *, oauth2_cfg_token_verify_t *, const char *, json_t **,
-    char **s_payload, oauth2_http_status_code_t *status_code);
+    char **s_payload, oauth2_http_status_code_t *status_code,
+    oauth2_token_verify_result_t *result);
 
 typedef struct oauth2_cfg_ctx_t {
 	void *ptr;

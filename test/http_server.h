@@ -66,6 +66,8 @@ typedef struct oauth2_check_http_response_t {
 				     when NULL) */
 	oauth2_nv_list_t *extra_headers; /* nullable; emitted as additional
 					    response headers */
+	int delay_ms;			 /* delay before response headers */
+	int body_delay_ms;		 /* delay after response headers */
 } oauth2_check_http_response_t;
 
 typedef struct oauth2_check_http_captured_t {
@@ -135,6 +137,8 @@ int oauth2_check_http_server_request_count(oauth2_check_http_server_t *s);
 
 /* Join the server thread and release all resources. */
 void oauth2_check_http_server_stop(oauth2_check_http_server_t *s);
+/* Stop accepting and join, retaining captured evidence until stop(). */
+void oauth2_check_http_server_finish(oauth2_check_http_server_t *s);
 
 /*
  * Bind+release a loopback TCP port and return the (now likely-free) port

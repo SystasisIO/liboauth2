@@ -271,8 +271,10 @@ char *oauth2_cfg_token_verify_add_options(oauth2_log_t *log,
 
 	v = _oauth2_cfg_token_verify_add(log, verify);
 
-	v->cache = oauth2_cache_obtain(
-	    log, oauth2_nv_list_get(log, params, "verify.cache"));
+	const char *cache = oauth2_nv_list_get(log, params, "verify.cache");
+	v->cache = cache && strcmp(cache, "none") == 0
+		       ? NULL
+		       : oauth2_cache_obtain(log, cache);
 	v->expiry_s =
 	    oauth2_parse_uint(log, oauth2_nv_list_get(log, params, "expiry"),
 			      OAUTH2_CFG_VERIFY_RESULT_CACHE_DEFAULT);

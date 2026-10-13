@@ -388,6 +388,18 @@ end:
 	return rc;
 }
 
+bool oauth2_ipc_thread_mutex_trylock(oauth2_log_t *log,
+				     oauth2_ipc_thread_mutex_t *m)
+{
+	if (!m)
+		return false;
+#ifdef _WIN32
+	return TryEnterCriticalSection(&m->mutex) != 0;
+#else
+	return pthread_mutex_trylock(&m->mutex) == 0;
+#endif
+}
+
 bool oauth2_ipc_thread_mutex_unlock(oauth2_log_t *log,
 				    oauth2_ipc_thread_mutex_t *m)
 {

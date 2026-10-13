@@ -45,6 +45,7 @@
 #include <string.h>
 
 #include "oauth2/util.h"
+struct oauth2_http_call_ctx_t;
 
 /**
  * @name Sentinel values for unset flag/integer/time settings
@@ -373,6 +374,10 @@ OAUTH2_CFG_TYPE_DECLARE(cfg, endpoint)
  * - "http_retries": how often a failed call is retried, default 1
  * - "http_retry_interval": the interval between retries in
  *   milliseconds, default 300
+ * - "http_follow_redirects": follow redirects, default true
+ * - "http_max_redirects": maximum redirects, default 5
+ * - "http_max_response_bytes": maximum body size, default 1048576
+ * - "ca_info": CA bundle file, libcurl's default trust roots when absent
  * - "outgoing_proxy": the proxy to route the call through, none by
  *   default
  *
@@ -390,6 +395,19 @@ char *oauth2_cfg_set_endpoint(oauth2_log_t *log, oauth2_cfg_endpoint_t *cfg,
 
 /** @brief Get the endpoint URL; NULL when not configured. */
 const char *oauth2_cfg_endpoint_get_url(const oauth2_cfg_endpoint_t *cfg);
+const char *oauth2_cfg_endpoint_get_ca_info(const oauth2_cfg_endpoint_t *cfg);
+oauth2_flag_t
+oauth2_cfg_endpoint_get_http_follow_redirects(const oauth2_cfg_endpoint_t *cfg);
+oauth2_uint_t
+oauth2_cfg_endpoint_get_http_max_redirects(const oauth2_cfg_endpoint_t *cfg);
+oauth2_uint_t oauth2_cfg_endpoint_get_http_max_response_bytes(
+    const oauth2_cfg_endpoint_t *cfg);
+/** Apply explicit HTTP options, preserving the context timeout when unset.
+ * Use endpoint timeout getter first for consumers whose historical default
+ * is 20 seconds rather than the context's 15 seconds. */
+bool oauth2_cfg_endpoint_http_call_ctx_set(oauth2_log_t *log,
+					   const oauth2_cfg_endpoint_t *cfg,
+					   struct oauth2_http_call_ctx_t *ctx);
 /** @brief Set the endpoint URL to a copy of @p url, replacing any. */
 void oauth2_cfg_endpoint_set_url(oauth2_cfg_endpoint_t *cfg, const char *url);
 /**
@@ -480,13 +498,29 @@ OAUTH2_CFG_TYPE_DECLARE(cfg, token_verify)
  *     the type name for the "introspect", "jwks_uri", "eckey_uri" and
  *     "metadata" types, e.g. "introspect.auth" or
  *     "jwks_uri.ssl_verify", plus the "<type>.cache" and "<type>.expiry"
- *     (default 86400 seconds) settings for caching what the URL serves
+ *     (default 86400 seconds) settings for caching what the URL serves;
+ *     "<type>.cache=none" disables this URI cache
  *     ("metadata" takes both "metadata." and "jwks_uri." settings),
  *     "introspect.token_param_name" (default "token") and
  *     "introspect.params" for extra introspection request parameters,
  *     and "alb_base_url" for "aws_alb"
+ *   - opt-in JWKS resource controls: "jwks_uri.max_keys" limits the total
+ *     JSON keys array before any CJOSE import; "jwks_uri.refresh_interval"
+ *     coalesces and throttles attempts per configured provider (seconds),
+ *     with bounded pending-refresh waits via "jwks_uri.refresh_wait_timeout"
+ *     (milliseconds, default 15000). Explicit zero is rejected for all three.
+ *     When refresh controls are enabled, an isolated in-process body snapshot
+ *     replaces the global URI cache, shared only with clones of that provider;
+ *     "jwks_uri.cache=none" is incompatible. Cooldown starts before each
+ *     attempt, including failures, and bounds key-rotation delay. Known keys
+ *     may use an unexpired successful snapshot while refresh failed; unknown
+ *     keys retain the typed refresh failure during cooldown. Successful
+ *     snapshots still apply every token's signature/claims policy. Freeing
+ *     a verification instance while that instance is in use is unsupported.
  *   - the verification result cache: "verify.cache" (a cache name,
- *     the default cache when absent) and "expiry" (300 seconds)
+ *     the default cache when absent, "none" disables it) and "expiry"
+ *     (300 seconds). Resource profiles should disable this decision cache
+ *     when claim/purpose/freshness policy is enforced by the caller
  *   - the presentation type "type=bearer|dpop|mtls" with, for DPoP,
  *     the proof replay cache "dpop.cache" and "dpop.expiry" (10
  *     seconds), "dpop.iat.verify" (required), "dpop.iat.slack.before"

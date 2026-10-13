@@ -248,27 +248,13 @@ static bool _oauth2_openidc_provider_resolve_url_exec(
 	if (http_ctx == NULL)
 		goto end;
 
-	if (oauth2_http_call_ctx_ssl_verify_set(
-		log, http_ctx,
-		oauth2_cfg_endpoint_get_ssl_verify(ctx->endpoint)) == false)
-		goto end;
-
 	if (oauth2_http_call_ctx_timeout_set(
 		log, http_ctx,
 		oauth2_cfg_endpoint_get_http_timeout(ctx->endpoint)) == false)
 		goto end;
-	if (oauth2_http_call_ctx_retries_set(
-		log, http_ctx,
-		oauth2_cfg_endpoint_get_http_retries(ctx->endpoint)) == false)
+	if (!oauth2_cfg_endpoint_http_call_ctx_set(log, ctx->endpoint,
+						   http_ctx))
 		goto end;
-	if (oauth2_http_call_ctx_retry_interval_set(
-		log, http_ctx,
-		oauth2_cfg_endpoint_get_http_retry_interval(ctx->endpoint)) ==
-	    false)
-		goto end;
-	oauth2_http_call_ctx_outgoing_proxy_set(
-	    log, http_ctx,
-	    oauth2_cfg_endpoint_get_outgoing_proxy(ctx->endpoint));
 
 	if (oauth2_http_get(log, oauth2_cfg_endpoint_get_url(ctx->endpoint),
 			    NULL, http_ctx, s_json, &status_code) == false)

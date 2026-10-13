@@ -246,6 +246,9 @@ static bool _oauth2_openidc_id_token_verify(
 	if (ssl_verify == false)
 		options =
 		    oauth2_stradd(NULL, "jwks_uri.ssl_verify", "=", "false");
+	/* OIDC client config has no endpoint redirect/body controls. Keep the
+	 * historical JWKS context defaults; this is not a strict resource
+	 * profile. */
 	rv = oauth2_cfg_token_verify_add_options(log, &verify, "jwks_uri",
 						 provider->jwks_uri, options);
 	if (rv != NULL) {
@@ -320,6 +323,8 @@ _oauth2_openidc_token_endpoint_call(oauth2_log_t *log,
 	oauth2_debug(log, "enter");
 
 	http_ctx = oauth2_http_call_ctx_init(log);
+	/* Client config owns timeout/retries, not redirect/body controls; those
+	 * retain the initialized HTTP defaults on this OIDC path. */
 	if (http_ctx == NULL)
 		goto end;
 
@@ -456,6 +461,8 @@ static bool _oauth2_openidc_userinfo_request(
 	}
 
 	http_ctx = oauth2_http_call_ctx_init(log);
+	/* As above, OIDC client config retains default redirect/body controls.
+	 */
 	if (http_ctx == NULL)
 		goto end;
 

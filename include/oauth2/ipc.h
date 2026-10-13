@@ -137,6 +137,10 @@ bool oauth2_ipc_thread_mutex_lock(oauth2_log_t *log,
  * @param m   the mutex to release
  * @return true when the mutex was released, false on error
  */
+/** Acquire without waiting; false when busy or on error. */
+bool oauth2_ipc_thread_mutex_trylock(oauth2_log_t *log,
+				     oauth2_ipc_thread_mutex_t *m);
+
 bool oauth2_ipc_thread_mutex_unlock(oauth2_log_t *log,
 				    oauth2_ipc_thread_mutex_t *m);
 /** @} */

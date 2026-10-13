@@ -1169,7 +1169,7 @@ static bool oauth2_json_string_print(oauth2_log_t *log, json_t *result,
 	return rc;
 }
 
-static bool oauth2_json_check_error(oauth2_log_t *log, json_t *json)
+bool oauth2_json_check_error(oauth2_log_t *log, json_t *json)
 {
 	bool rc = false;
 	if (oauth2_json_string_print(log, json, "error",

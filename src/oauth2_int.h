@@ -40,4 +40,7 @@ bool oauth2_dpop_token_verify(oauth2_log_t *log,
 			      oauth2_http_request_t *request,
 			      const char *access_token, json_t *json_payload);
 
+void oauth2_token_verify_result_http_set(oauth2_token_verify_result_t *result,
+					 const oauth2_http_call_result_t *http);
+
 #endif /* _OAUTH2_INT_H_ */

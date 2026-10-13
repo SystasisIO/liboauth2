@@ -467,7 +467,8 @@ START_TEST(test_proto_cfg_endpoint)
 	    _log,
 	    "url=http%3A%2F%2Fexample.com%2Ftoken&http_timeout=30&http_retries="
 	    "2&http_retry_interval=60&outgoing_proxy=http%3A%2F%2Fproxy%3A3128&"
-	    "ssl_verify=false",
+	    "ssl_verify=false&http_follow_redirects=false&http_max_redirects=0&"
+	    "http_max_response_bytes=4096&ca_info=fixture-ca.pem",
 	    &params);
 	rv = oauth2_cfg_set_endpoint(_log, cfg, NULL, params, NULL);
 	ck_assert_ptr_eq(rv, NULL);
@@ -484,6 +485,13 @@ START_TEST(test_proto_cfg_endpoint)
 	// clone (copies the outgoing_proxy too) then free both
 	clone = oauth2_cfg_endpoint_clone(_log, cfg);
 	ck_assert_ptr_ne(clone, NULL);
+	ck_assert_str_eq(oauth2_cfg_endpoint_get_ca_info(clone),
+			 "fixture-ca.pem");
+	ck_assert_int_eq(oauth2_cfg_endpoint_get_http_follow_redirects(clone),
+			 false);
+	ck_assert_uint_eq(oauth2_cfg_endpoint_get_http_max_redirects(clone), 0);
+	ck_assert_uint_eq(
+	    oauth2_cfg_endpoint_get_http_max_response_bytes(clone), 4096);
 	ck_assert_str_eq(oauth2_cfg_endpoint_get_outgoing_proxy(clone),
 			 "http://proxy:3128");
 
@@ -499,6 +507,75 @@ START_TEST(test_proto_cfg_endpoint)
 	oauth2_nv_list_free(_log, params);
 	oauth2_cfg_endpoint_free(_log, clone);
 	oauth2_cfg_endpoint_free(_log, cfg);
+}
+END_TEST
+
+START_TEST(test_proto_endpoint_controls)
+{
+	oauth2_cfg_endpoint_t *cfg = oauth2_cfg_endpoint_init(NULL);
+	oauth2_http_call_ctx_t *ctx = oauth2_http_call_ctx_init(NULL), *clone;
+	oauth2_nv_list_t *params = NULL;
+	char *error, *token = NULL;
+	ck_assert_uint_eq(oauth2_cfg_endpoint_get_http_timeout(cfg), 20);
+	ck_assert_int_eq(oauth2_cfg_endpoint_http_call_ctx_set(NULL, cfg, ctx),
+			 true);
+	ck_assert_int_eq(oauth2_http_call_ctx_timeout_get(NULL, ctx), 15);
+	oauth2_parse_form_encoded_params(
+	    NULL,
+	    "test.http_timeout=1&test.http_retries=0&test.http_retry_interval="
+	    "0&"
+	    "test.http_follow_redirects=false&test.http_max_redirects=0&"
+	    "test.http_max_response_bytes=32",
+	    &params);
+	ck_assert_ptr_eq(oauth2_cfg_set_endpoint(NULL, cfg, "http://localhost",
+						 params, "test"),
+			 NULL);
+	ck_assert_int_eq(oauth2_cfg_endpoint_http_call_ctx_set(NULL, cfg, ctx),
+			 true);
+	clone = oauth2_http_call_ctx_clone(NULL, ctx);
+	ck_assert_ptr_ne(clone, NULL);
+	ck_assert_int_eq(oauth2_http_call_ctx_timeout_get(NULL, clone), 1);
+	ck_assert_int_eq(oauth2_http_call_ctx_retries_get(NULL, clone), 0);
+	ck_assert_int_eq(oauth2_http_call_ctx_retry_interval_get(NULL, clone),
+			 0);
+	ck_assert_int_eq(oauth2_http_call_ctx_follow_redirects_get(NULL, clone),
+			 false);
+	ck_assert_int_eq(oauth2_http_call_ctx_max_redirects_get(NULL, clone),
+			 0);
+	ck_assert_uint_eq(
+	    oauth2_http_call_ctx_max_response_bytes_get(NULL, clone), 32);
+	oauth2_nv_list_free(NULL, params);
+	params = oauth2_nv_list_init(NULL);
+	oauth2_nv_list_add(NULL, params, "http_timeout", "4294967297");
+	error = oauth2_cfg_set_endpoint(NULL, cfg, "http://localhost", params,
+					NULL);
+	ck_assert_ptr_ne(error, NULL);
+	oauth2_mem_free(error);
+	oauth2_nv_list_set(NULL, params, "http_timeout", "0");
+	error = oauth2_cfg_set_endpoint(NULL, cfg, "http://localhost", params,
+					NULL);
+	ck_assert_ptr_ne(error, NULL);
+	oauth2_mem_free(error);
+	oauth2_nv_list_free(NULL, params);
+	oauth2_check_http_response_t reply = {
+	    .status_code = 503, .body = "{\"access_token\":\"fabricated\"}"};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	oauth2_cfg_endpoint_free(NULL, cfg);
+	cfg = NULL;
+	oauth2_cfg_cc_t *cc = oauth2_cfg_cc_init(NULL);
+	ck_assert_ptr_eq(
+	    oauth2_cfg_set_cc(NULL, cc, oauth2_check_http_server_url(srv),
+			      "http_follow_redirects=false&http_retries=0"),
+	    NULL);
+	ck_assert_int_eq(oauth2_cc_exec(NULL, cc, &token, NULL), false);
+	ck_assert_ptr_eq(token, NULL);
+	oauth2_check_http_server_stop(srv);
+	oauth2_cfg_endpoint_free(NULL, cfg);
+	oauth2_cfg_cc_free(NULL, cc);
+	oauth2_http_call_ctx_free(NULL, ctx);
+	oauth2_http_call_ctx_free(NULL, clone);
 }
 END_TEST
 
@@ -613,6 +690,7 @@ Suite *oauth2_check_proto_suite()
 	tcase_add_test(c, test_proto_ropc);
 	tcase_add_test(c, test_proto_cc);
 	tcase_add_test(c, test_proto_cfg_endpoint);
+	tcase_add_test(c, test_proto_endpoint_controls);
 	tcase_add_test(c, test_proto_ropc_cfg);
 	tcase_add_test(c, test_proto_cc_cfg);
 

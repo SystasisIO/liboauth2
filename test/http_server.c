@@ -127,7 +127,12 @@ static bool srv_write_all(srv_sock_t fd, const char *buf, size_t len)
 {
 	size_t off = 0;
 	while (off < len) {
+#ifdef MSG_NOSIGNAL
+		srv_ssize_t n =
+		    send(fd, buf + off, (int)(len - off), MSG_NOSIGNAL);
+#else
 		srv_ssize_t n = send(fd, buf + off, (int)(len - off), 0);
+#endif
 		if (n <= 0) {
 			if ((n < 0) && (srv_last_error() == EINTR))
 				continue;
@@ -279,6 +284,17 @@ static bool srv_append_hdr(oauth2_log_t *log, void *rec, const char *key,
 	return true;
 }
 
+static void srv_delay(int ms)
+{
+	if (ms <= 0)
+		return;
+#ifdef _WIN32
+	Sleep((DWORD)ms);
+#else
+	usleep(ms * 1000);
+#endif
+}
+
 static void srv_send_response(oauth2_check_http_server_t *s,
 			      const oauth2_check_http_response_t *r,
 			      srv_sock_t fd)
@@ -308,7 +324,9 @@ static void srv_send_response(oauth2_check_http_server_t *s,
 	head = oauth2_stradd(head, "Content-Length: ", numbuf, "\r\n");
 	head = oauth2_stradd(head, "Connection: close\r\n\r\n", NULL, NULL);
 
+	srv_delay(r->delay_ms);
 	srv_write_all(fd, head, strlen(head));
+	srv_delay(r->body_delay_ms);
 	if (body_len > 0)
 		srv_write_all(fd, r->body, body_len);
 
@@ -346,6 +364,10 @@ static void *srv_run(void *data)
 
 		/* short timeout so a misbehaving test doesn't hang the suite */
 		srv_set_recv_timeout(conn, OAUTH2_CHECK_SRV_RECV_TIMEOUT);
+#ifdef SO_NOSIGPIPE
+		int on = 1;
+		setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#endif
 
 		char *buf = oauth2_mem_alloc(OAUTH2_CHECK_SRV_READ_BUF);
 		size_t received_total = 0;
@@ -467,6 +489,8 @@ oauth2_check_http_server_t *oauth2_check_http_server_start_at(
 	       sizeof(oauth2_check_http_response_t) * n_responses);
 	for (int i = 0; i < n_responses; i++) {
 		s->responses[i].status_code = responses[i].status_code;
+		s->responses[i].delay_ms = responses[i].delay_ms;
+		s->responses[i].body_delay_ms = responses[i].body_delay_ms;
 		if (responses[i].content_type != NULL)
 			s->responses[i].content_type =
 			    oauth2_strdup(responses[i].content_type);
@@ -587,7 +611,7 @@ oauth2_check_http_server_wait(oauth2_check_http_server_t *s)
 	return oauth2_check_http_server_captured(s, 0);
 }
 
-void oauth2_check_http_server_stop(oauth2_check_http_server_t *s)
+void oauth2_check_http_server_finish(oauth2_check_http_server_t *s)
 {
 	if (s == NULL)
 		return;
@@ -599,6 +623,13 @@ void oauth2_check_http_server_stop(oauth2_check_http_server_t *s)
 		srv_close_socket(s->listen_fd);
 		s->listen_fd = SRV_INVALID_SOCKET;
 	}
+}
+
+void oauth2_check_http_server_stop(oauth2_check_http_server_t *s)
+{
+	if (s == NULL)
+		return;
+	oauth2_check_http_server_finish(s);
 	srv_free_captured(s);
 	srv_free_responses(s);
 	oauth2_mem_free(s->url);

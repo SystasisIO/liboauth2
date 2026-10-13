@@ -120,6 +120,7 @@
 
 bool _oauth2_struct_slot_str_set(void *struct_ptr, size_t offset,
 				 const char *value);
+bool oauth2_json_check_error(oauth2_log_t *log, json_t *json);
 bool _oauth2_struct_slot_integer_set(void *struct_ptr, size_t offset,
 				     const int value);
 bool _oauth2_struct_slot_bln_set(void *struct_ptr, size_t offset,

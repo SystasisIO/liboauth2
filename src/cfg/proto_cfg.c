@@ -22,6 +22,9 @@
 #include "oauth2/mem.h"
 
 #include "cfg_int.h"
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
 
 /*
  * endpoint
@@ -42,7 +45,11 @@ oauth2_cfg_endpoint_t *oauth2_cfg_endpoint_init(oauth2_log_t *log)
 	endpoint->http_timeout = OAUTH2_CFG_UINT_UNSET;
 	endpoint->http_retries = OAUTH2_CFG_UINT_UNSET;
 	endpoint->http_retry_interval = OAUTH2_CFG_UINT_UNSET;
+	endpoint->http_follow_redirects = OAUTH2_CFG_FLAG_UNSET;
+	endpoint->http_max_redirects = OAUTH2_CFG_UINT_UNSET;
+	endpoint->http_max_response_bytes = OAUTH2_CFG_UINT_UNSET;
 	endpoint->outgoing_proxy = NULL;
+	endpoint->ca_info = NULL;
 
 end:
 
@@ -61,6 +68,8 @@ void oauth2_cfg_endpoint_free(oauth2_log_t *log,
 		oauth2_cfg_endpoint_auth_free(log, endpoint->auth);
 	if (endpoint->outgoing_proxy)
 		oauth2_mem_free(endpoint->outgoing_proxy);
+	if (endpoint->ca_info)
+		oauth2_mem_free(endpoint->ca_info);
 
 	oauth2_mem_free(endpoint);
 
@@ -78,13 +87,23 @@ oauth2_cfg_endpoint_clone(oauth2_log_t *log, const oauth2_cfg_endpoint_t *src)
 		goto end;
 
 	dst = oauth2_cfg_endpoint_init(log);
+	if (!dst)
+		goto end;
 	dst->url = oauth2_strdup(src->url);
 	dst->auth = oauth2_cfg_endpoint_auth_clone(log, src->auth);
 	dst->ssl_verify = src->ssl_verify;
 	dst->http_timeout = src->http_timeout;
 	dst->http_retries = src->http_retries;
 	dst->http_retry_interval = src->http_retry_interval;
+	dst->http_follow_redirects = src->http_follow_redirects;
+	dst->http_max_redirects = src->http_max_redirects;
+	dst->http_max_response_bytes = src->http_max_response_bytes;
 	dst->outgoing_proxy = oauth2_strdup(src->outgoing_proxy);
+	dst->ca_info = oauth2_strdup(src->ca_info);
+	if (src->ca_info && !dst->ca_info) {
+		oauth2_cfg_endpoint_free(log, dst);
+		dst = NULL;
+	}
 
 end:
 	return dst;
@@ -94,6 +113,20 @@ end:
 #define OAUTH2_CFG_ENDPOINT_HTTP_TIMEOUT_DEFAULT 20
 #define OAUTH2_CFG_ENDPOINT_HTTP_RETRIES_DEFAULT 1
 #define OAUTH2_CFG_ENDPOINT_HTTP_RETRY_INTERVAL_DEFAULT 300
+
+/* Validate before narrowing; the generic slot setter accepts a long. */
+static const char *_oauth2_cfg_endpoint_uint_set(oauth2_cfg_endpoint_t *cfg,
+						 size_t offset,
+						 const char *value)
+{
+	char *end = NULL;
+	unsigned long v;
+	errno = 0;
+	v = strtoul(value, &end, 10);
+	if (errno || end == value || *end || v >= OAUTH2_CFG_UINT_UNSET)
+		return "HTTP control outside supported range";
+	return oauth2_cfg_set_uint_slot(cfg, offset, value);
+}
 
 char *oauth2_cfg_set_endpoint(oauth2_log_t *log, oauth2_cfg_endpoint_t *cfg,
 			      const char *url, const oauth2_nv_list_t *params,
@@ -147,7 +180,7 @@ char *oauth2_cfg_set_endpoint(oauth2_log_t *log, oauth2_cfg_endpoint_t *cfg,
 			    "http_timeout");
 	value = oauth2_nv_list_get(log, params, key);
 	if (value) {
-		rv = oauth2_strdup(oauth2_cfg_set_uint_slot(
+		rv = oauth2_strdup(_oauth2_cfg_endpoint_uint_set(
 		    cfg, offsetof(oauth2_cfg_endpoint_t, http_timeout), value));
 		if (rv)
 			goto end;
@@ -158,7 +191,7 @@ char *oauth2_cfg_set_endpoint(oauth2_log_t *log, oauth2_cfg_endpoint_t *cfg,
 			    "http_retries");
 	value = oauth2_nv_list_get(log, params, key);
 	if (value) {
-		rv = oauth2_strdup(oauth2_cfg_set_uint_slot(
+		rv = oauth2_strdup(_oauth2_cfg_endpoint_uint_set(
 		    cfg, offsetof(oauth2_cfg_endpoint_t, http_retries), value));
 		if (rv)
 			goto end;
@@ -169,7 +202,7 @@ char *oauth2_cfg_set_endpoint(oauth2_log_t *log, oauth2_cfg_endpoint_t *cfg,
 			    "http_retry_interval");
 	value = oauth2_nv_list_get(log, params, key);
 	if (value) {
-		rv = oauth2_strdup(oauth2_cfg_set_uint_slot(
+		rv = oauth2_strdup(_oauth2_cfg_endpoint_uint_set(
 		    cfg, offsetof(oauth2_cfg_endpoint_t, http_retry_interval),
 		    value));
 		if (rv)
@@ -188,6 +221,57 @@ char *oauth2_cfg_set_endpoint(oauth2_log_t *log, oauth2_cfg_endpoint_t *cfg,
 			goto end;
 	}
 	oauth2_mem_free(key);
+	key = NULL;
+
+	/* Keep unset values distinct from context and endpoint defaults. */
+	key = oauth2_stradd(NULL, prefix, prefix ? "." : NULL, "ca_info");
+	value = oauth2_nv_list_get(log, params, key);
+	if (value)
+		rv = oauth2_strdup(oauth2_cfg_set_str_slot(
+		    cfg, offsetof(oauth2_cfg_endpoint_t, ca_info), value));
+	oauth2_mem_free(key);
+	key = NULL;
+	if (rv)
+		goto end;
+	const char *numbers[] = {"http_max_redirects",
+				 "http_max_response_bytes"};
+	size_t number_offsets[] = {
+	    offsetof(oauth2_cfg_endpoint_t, http_max_redirects),
+	    offsetof(oauth2_cfg_endpoint_t, http_max_response_bytes)};
+	int i;
+	key = oauth2_stradd(NULL, prefix, prefix ? "." : NULL,
+			    "http_follow_redirects");
+	value = oauth2_nv_list_get(log, params, key);
+	if (value)
+		rv = oauth2_strdup(oauth2_cfg_set_flag_slot(
+		    cfg, offsetof(oauth2_cfg_endpoint_t, http_follow_redirects),
+		    value));
+	oauth2_mem_free(key);
+	key = NULL;
+	if (rv)
+		goto end;
+	for (i = 0; i < 2; i++) {
+		key = oauth2_stradd(NULL, prefix, prefix ? "." : NULL,
+				    numbers[i]);
+		value = oauth2_nv_list_get(log, params, key);
+		if (value)
+			rv = oauth2_strdup(_oauth2_cfg_endpoint_uint_set(
+			    cfg, number_offsets[i], value));
+		oauth2_mem_free(key);
+		key = NULL;
+		if (rv)
+			goto end;
+	}
+	if (((cfg->http_timeout != OAUTH2_CFG_UINT_UNSET) &&
+	     ((cfg->http_timeout == 0) || (cfg->http_timeout > INT_MAX))) ||
+	    ((cfg->http_retries != OAUTH2_CFG_UINT_UNSET) &&
+	     (cfg->http_retries >= INT_MAX)) ||
+	    ((cfg->http_retry_interval != OAUTH2_CFG_UINT_UNSET) &&
+	     (cfg->http_retry_interval > INT_MAX / 1000)) ||
+	    ((cfg->http_max_redirects != OAUTH2_CFG_UINT_UNSET) &&
+	     (cfg->http_max_redirects > INT_MAX)) ||
+	    (cfg->http_max_response_bytes == 0))
+		rv = oauth2_strdup("HTTP control outside supported range");
 
 	key = NULL;
 
@@ -201,11 +285,79 @@ end:
 	return rv;
 }
 
+oauth2_flag_t
+oauth2_cfg_endpoint_get_http_follow_redirects(const oauth2_cfg_endpoint_t *cfg)
+{
+	return (!cfg || cfg->http_follow_redirects == OAUTH2_CFG_FLAG_UNSET)
+		   ? true
+		   : cfg->http_follow_redirects;
+}
+
+oauth2_uint_t
+oauth2_cfg_endpoint_get_http_max_redirects(const oauth2_cfg_endpoint_t *cfg)
+{
+	return (!cfg || cfg->http_max_redirects == OAUTH2_CFG_UINT_UNSET)
+		   ? 5
+		   : cfg->http_max_redirects;
+}
+
+oauth2_uint_t oauth2_cfg_endpoint_get_http_max_response_bytes(
+    const oauth2_cfg_endpoint_t *cfg)
+{
+	return (!cfg || cfg->http_max_response_bytes == OAUTH2_CFG_UINT_UNSET)
+		   ? 1024 * 1024
+		   : cfg->http_max_response_bytes;
+}
+
+bool oauth2_cfg_endpoint_http_call_ctx_set(oauth2_log_t *log,
+					   const oauth2_cfg_endpoint_t *cfg,
+					   oauth2_http_call_ctx_t *ctx)
+{
+	if (!cfg || !ctx)
+		return false;
+	if (oauth2_cfg_endpoint_get_http_max_redirects(cfg) > INT_MAX)
+		return false;
+	if ((cfg->http_timeout != OAUTH2_CFG_UINT_UNSET) &&
+	    ((cfg->http_timeout > INT_MAX) ||
+	     !oauth2_http_call_ctx_timeout_set(log, ctx, cfg->http_timeout)))
+		return false;
+	if ((cfg->http_retries != OAUTH2_CFG_UINT_UNSET) &&
+	    ((cfg->http_retries >= INT_MAX) ||
+	     !oauth2_http_call_ctx_retries_set(log, ctx, cfg->http_retries)))
+		return false;
+	if ((cfg->http_retry_interval != OAUTH2_CFG_UINT_UNSET) &&
+	    ((cfg->http_retry_interval > INT_MAX / 1000) ||
+	     !oauth2_http_call_ctx_retry_interval_set(
+		 log, ctx, cfg->http_retry_interval)))
+		return false;
+	const char *proxy = oauth2_cfg_endpoint_get_outgoing_proxy(cfg);
+	if (proxy && !oauth2_http_call_ctx_outgoing_proxy_set(log, ctx, proxy))
+		return false;
+	if (cfg->ca_info &&
+	    !oauth2_http_call_ctx_ca_info_set(log, ctx, cfg->ca_info))
+		return false;
+	return oauth2_http_call_ctx_ssl_verify_set(
+		   log, ctx, oauth2_cfg_endpoint_get_ssl_verify(cfg)) &&
+	       oauth2_http_call_ctx_follow_redirects_set(
+		   log, ctx,
+		   oauth2_cfg_endpoint_get_http_follow_redirects(cfg)) &&
+	       oauth2_http_call_ctx_max_redirects_set(
+		   log, ctx, oauth2_cfg_endpoint_get_http_max_redirects(cfg)) &&
+	       oauth2_http_call_ctx_max_response_bytes_set(
+		   log, ctx,
+		   oauth2_cfg_endpoint_get_http_max_response_bytes(cfg));
+}
+
 void oauth2_cfg_endpoint_set_url(oauth2_cfg_endpoint_t *cfg, const char *url)
 {
 	if (cfg->url)
 		oauth2_mem_free(cfg->url);
 	cfg->url = oauth2_strdup(url);
+}
+
+const char *oauth2_cfg_endpoint_get_ca_info(const oauth2_cfg_endpoint_t *cfg)
+{
+	return cfg ? cfg->ca_info : NULL;
 }
 
 const char *oauth2_cfg_endpoint_get_url(const oauth2_cfg_endpoint_t *cfg)

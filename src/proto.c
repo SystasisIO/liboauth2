@@ -355,24 +355,23 @@ bool oauth2_proto_request(oauth2_log_t *log,
 	char *response = NULL;
 	json_t *result = NULL;
 	char *tkn = NULL;
+	oauth2_uint_t local_status = 0;
+	if (!status_code)
+		status_code = &local_status;
 
-	oauth2_http_call_ctx_ssl_verify_set(
-	    log, ctx, oauth2_cfg_endpoint_get_ssl_verify(token_endpoint));
-	oauth2_http_call_ctx_timeout_set(
-	    log, ctx, oauth2_cfg_endpoint_get_http_timeout(token_endpoint));
-	oauth2_http_call_ctx_retries_set(
-	    log, ctx, oauth2_cfg_endpoint_get_http_retries(token_endpoint));
-	oauth2_http_call_ctx_retry_interval_set(
-	    log, ctx,
-	    oauth2_cfg_endpoint_get_http_retry_interval(token_endpoint));
-	// oauth2_http_call_ctx_outgoing_proxy_set(log, ctx, outgoing_proxy);
+	/* This path historically uses the endpoint getter's 20s default. */
+	if (!oauth2_http_call_ctx_timeout_set(
+		log, ctx,
+		oauth2_cfg_endpoint_get_http_timeout(token_endpoint)) ||
+	    !oauth2_cfg_endpoint_http_call_ctx_set(log, token_endpoint, ctx))
+		goto end;
 
 	if (oauth2_http_post_form(log,
 				  oauth2_cfg_endpoint_get_url(token_endpoint),
 				  params, ctx, &response, status_code) == false)
 		goto end;
 
-	if ((status_code) && ((*status_code < 200) || (*status_code >= 300)))
+	if ((*status_code < 200) || (*status_code >= 300))
 		goto end;
 
 	if (oauth2_json_decode_check_error(log, response, &result) == false)

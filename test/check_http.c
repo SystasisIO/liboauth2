@@ -736,6 +736,195 @@ START_TEST(test_http_post_form)
 }
 END_TEST
 
+START_TEST(test_http_controls)
+{
+	char *response = NULL;
+	oauth2_http_status_code_t status = 0;
+	oauth2_http_call_result_t result;
+	oauth2_http_call_ctx_t *ctx = oauth2_http_call_ctx_init(NULL), *clone;
+	oauth2_check_http_response_t replies[] = {
+	    {.status_code = 503, .body = "unavailable"},
+	    {.status_code = 200, .body = "12345"},
+	    {.status_code = 200, .body = "1234"},
+	    {.status_code = 200, .body = ""}};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start_seq(replies, 4);
+	ck_assert_ptr_ne(srv, NULL);
+	ck_assert_int_eq(oauth2_http_call_ctx_timeout_get(NULL, ctx), 15);
+	ck_assert_int_eq(oauth2_http_call_ctx_follow_redirects_get(NULL, ctx),
+			 true);
+	ck_assert_int_eq(oauth2_http_call_ctx_max_redirects_get(NULL, ctx), 5);
+	ck_assert_uint_eq(
+	    oauth2_http_call_ctx_max_response_bytes_get(NULL, ctx), 1048576);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       ctx, &response, &status, &result),
+	    true);
+	ck_assert_int_eq(status, 503);
+	ck_assert_int_eq(result.status_code, 503);
+	ck_assert_int_eq(result.error, OAUTH2_HTTP_CALL_OK);
+	oauth2_mem_free(response);
+	ck_assert_int_eq(
+	    oauth2_http_call_ctx_max_response_bytes_set(NULL, ctx, 4), true);
+	ck_assert_int_eq(oauth2_http_call_ctx_retries_set(NULL, ctx, 5), true);
+	clone = oauth2_http_call_ctx_clone(NULL, ctx);
+	ck_assert_ptr_ne(clone, NULL);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       clone, &response, NULL, &result),
+	    false);
+	ck_assert_ptr_eq(response, NULL);
+	ck_assert_int_eq(result.error, OAUTH2_HTTP_CALL_RESPONSE_TOO_LARGE);
+	ck_assert_int_eq(result.status_code, 200);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       clone, &response, NULL, &result),
+	    true);
+	ck_assert_str_eq(response, "1234");
+	oauth2_mem_free(response);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       clone, &response, NULL, &result),
+	    true);
+	ck_assert_str_eq(response, "");
+	oauth2_mem_free(response);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 4);
+	oauth2_check_http_server_stop(srv);
+	oauth2_http_call_ctx_free(NULL, ctx);
+	oauth2_http_call_ctx_free(NULL, clone);
+}
+END_TEST
+
+START_TEST(test_http_redirect_controls)
+{
+	int codes[] = {302, 307, 308};
+	int i;
+	for (i = 0; i < 3; i++) {
+		char *response = NULL;
+		oauth2_http_call_result_t result;
+		oauth2_http_call_ctx_t *ctx = oauth2_http_call_ctx_init(NULL),
+				       *clone;
+		oauth2_check_http_response_t target_reply = {.status_code = 200,
+							     .body = "target"};
+		oauth2_check_http_server_t *target =
+		    oauth2_check_http_server_start(&target_reply);
+		oauth2_nv_list_t *headers = oauth2_nv_list_init(NULL);
+		ck_assert_ptr_ne(target, NULL);
+		oauth2_nv_list_add(NULL, headers, "Location",
+				   oauth2_check_http_server_url(target));
+		oauth2_check_http_response_t redirect = {
+		    .status_code = codes[i],
+		    .body = "redirect",
+		    .extra_headers = headers};
+		oauth2_check_http_server_t *srv =
+		    oauth2_check_http_server_start(&redirect);
+		ck_assert_ptr_ne(srv, NULL);
+		oauth2_http_call_ctx_follow_redirects_set(NULL, ctx, false);
+		oauth2_http_call_ctx_basic_auth_set(NULL, ctx, "fabricated",
+						    "secret", false);
+		clone = oauth2_http_call_ctx_clone(NULL, ctx);
+		ck_assert_ptr_ne(clone, NULL);
+		ck_assert_int_eq(
+		    oauth2_http_call_ex(
+			NULL, oauth2_check_http_server_url(srv),
+			"token=fabricated&client_secret=fabricated", clone,
+			&response, NULL, &result),
+		    true);
+		ck_assert_int_eq(result.status_code, codes[i]);
+		ck_assert_int_eq(result.error, OAUTH2_HTTP_CALL_OK);
+		oauth2_check_http_server_finish(target);
+		ck_assert_int_eq(oauth2_check_http_server_request_count(target),
+				 0);
+		oauth2_check_http_server_stop(target);
+		oauth2_check_http_server_stop(srv);
+		oauth2_nv_list_free(NULL, headers);
+		oauth2_http_call_ctx_free(NULL, clone);
+		oauth2_http_call_ctx_free(NULL, ctx);
+		oauth2_mem_free(response);
+	}
+}
+END_TEST
+
+START_TEST(test_http_redirect_limit)
+{
+	char *response = NULL;
+	oauth2_http_call_result_t result;
+	oauth2_http_call_ctx_t *ctx = oauth2_http_call_ctx_init(NULL);
+	oauth2_nv_list_t *headers = oauth2_nv_list_init(NULL);
+	oauth2_nv_list_add(NULL, headers, "Location", "/again");
+	oauth2_check_http_response_t reply = {
+	    .status_code = 307, .body = "redirect", .extra_headers = headers};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	oauth2_http_call_ctx_max_redirects_set(NULL, ctx, 0);
+	oauth2_http_call_ctx_retries_set(NULL, ctx, 5);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       ctx, &response, NULL, &result),
+	    false);
+	ck_assert_int_eq(result.error, OAUTH2_HTTP_CALL_REDIRECT_LIMIT);
+	ck_assert_int_eq(result.status_code, 307);
+	ck_assert_ptr_eq(response, NULL);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 1);
+	oauth2_check_http_server_stop(srv);
+	oauth2_nv_list_free(NULL, headers);
+	oauth2_http_call_ctx_free(NULL, ctx);
+}
+END_TEST
+
+START_TEST(test_http_timeout)
+{
+	char *response = NULL;
+	oauth2_http_status_code_t status = 0;
+	oauth2_http_call_result_t result;
+	oauth2_http_call_ctx_t *ctx = oauth2_http_call_ctx_init(NULL);
+	oauth2_check_http_response_t reply = {
+	    .status_code = 200, .body = "late", .delay_ms = 1500};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	oauth2_http_call_ctx_timeout_set(NULL, ctx, 1);
+	oauth2_http_call_ctx_retries_set(NULL, ctx, 5);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       ctx, &response, &status, &result),
+	    false);
+	ck_assert_int_eq(status, 504);
+	ck_assert_int_eq(result.status_code, 0);
+	ck_assert_int_eq(result.error, OAUTH2_HTTP_CALL_TIMEOUT);
+	ck_assert_ptr_eq(response, NULL);
+	ck_assert_int_eq(oauth2_check_http_server_request_count(srv), 1);
+	oauth2_check_http_server_stop(srv);
+	oauth2_http_call_ctx_free(NULL, ctx);
+}
+END_TEST
+
+START_TEST(test_http_timeout_after_headers)
+{
+	char *response = NULL;
+	oauth2_http_status_code_t status = 0;
+	oauth2_http_call_result_t result;
+	oauth2_http_call_ctx_t *ctx = oauth2_http_call_ctx_init(NULL);
+	oauth2_check_http_response_t reply = {
+	    .status_code = 200, .body = "late", .body_delay_ms = 1500};
+	oauth2_check_http_server_t *srv =
+	    oauth2_check_http_server_start(&reply);
+	ck_assert_ptr_ne(srv, NULL);
+	oauth2_http_call_ctx_timeout_set(NULL, ctx, 1);
+	ck_assert_int_eq(
+	    oauth2_http_get_ex(NULL, oauth2_check_http_server_url(srv), NULL,
+			       ctx, &response, &status, &result),
+	    false);
+	ck_assert_int_eq(status, 504);
+	ck_assert_int_eq(result.status_code, 200);
+	ck_assert_int_eq(result.error, OAUTH2_HTTP_CALL_TIMEOUT);
+	ck_assert_ptr_eq(response, NULL);
+	oauth2_check_http_server_stop(srv);
+	oauth2_http_call_ctx_free(NULL, ctx);
+}
+END_TEST
+
 START_TEST(test_cookies)
 {
 	bool rc = false;
@@ -848,6 +1037,11 @@ Suite *oauth2_check_http_suite()
 	tcase_add_test(c, test_form_encode);
 	tcase_add_test(c, test_http_get);
 	tcase_add_test(c, test_http_post_form);
+	tcase_add_test(c, test_http_controls);
+	tcase_add_test(c, test_http_redirect_controls);
+	tcase_add_test(c, test_http_redirect_limit);
+	tcase_add_test(c, test_http_timeout);
+	tcase_add_test(c, test_http_timeout_after_headers);
 	tcase_add_test(c, test_cookies);
 	tcase_add_test(c, test_auth);
 	tcase_add_test(c, test_xml_http_request);

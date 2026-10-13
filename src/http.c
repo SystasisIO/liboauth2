@@ -19,6 +19,7 @@
  **************************************************************************/
 
 #include <curl/curl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32
@@ -627,6 +628,9 @@ typedef struct oauth2_http_call_ctx_t {
 	int retries;
 	int retry_interval;
 	bool ssl_verify;
+	bool follow_redirects;
+	int max_redirects;
+	oauth2_uint_t max_response_bytes;
 	char *outgoing_proxy;
 	oauth2_nv_list_t *cookie;
 	oauth2_nv_list_t *hdr;
@@ -658,6 +662,9 @@ oauth2_http_call_ctx_t *oauth2_http_call_ctx_init(oauth2_log_t *log)
 	    log, ctx, OAUTH2_HTTP_CALL_RETRY_INTERVAL_DEFAULT);
 	oauth2_http_call_ctx_ssl_verify_set(
 	    log, ctx, OAUTH2_HTTP_CALL_SSL_VERIFY_DEFAULT);
+	ctx->follow_redirects = true;
+	ctx->max_redirects = 5;
+	ctx->max_response_bytes = 1024 * 1024;
 	oauth2_http_call_ctx_outgoing_proxy_set(log, ctx, NULL);
 	oauth2_http_call_ctx_ca_info_set(log, ctx, NULL);
 	oauth2_http_call_ctx_ssl_cert_set(log, ctx, NULL);
@@ -672,6 +679,46 @@ oauth2_http_call_ctx_t *oauth2_http_call_ctx_init(oauth2_log_t *log)
 end:
 
 	return ctx;
+}
+
+oauth2_http_call_ctx_t *
+oauth2_http_call_ctx_clone(oauth2_log_t *log, const oauth2_http_call_ctx_t *src)
+{
+	oauth2_http_call_ctx_t *dst;
+	if (src == NULL)
+		return NULL;
+	dst = oauth2_http_call_ctx_init(log);
+	if (dst == NULL)
+		return NULL;
+	dst->timeout = src->timeout;
+	dst->retries = src->retries;
+	dst->retry_interval = src->retry_interval;
+	dst->ssl_verify = src->ssl_verify;
+	dst->follow_redirects = src->follow_redirects;
+	dst->max_redirects = src->max_redirects;
+	dst->max_response_bytes = src->max_response_bytes;
+	dst->basic_auth_username = oauth2_strdup(src->basic_auth_username);
+	dst->basic_auth_password = oauth2_strdup(src->basic_auth_password);
+	dst->bearer_token = oauth2_strdup(src->bearer_token);
+	dst->outgoing_proxy = oauth2_strdup(src->outgoing_proxy);
+	dst->ca_info = oauth2_strdup(src->ca_info);
+	dst->ssl_cert = oauth2_strdup(src->ssl_cert);
+	dst->ssl_key = oauth2_strdup(src->ssl_key);
+	oauth2_nv_list_free(log, dst->cookie);
+	oauth2_nv_list_free(log, dst->hdr);
+	dst->cookie = oauth2_nv_list_clone(log, src->cookie);
+	dst->hdr = oauth2_nv_list_clone(log, src->hdr);
+	if ((src->basic_auth_username && !dst->basic_auth_username) ||
+	    (src->basic_auth_password && !dst->basic_auth_password) ||
+	    (src->bearer_token && !dst->bearer_token) ||
+	    (src->outgoing_proxy && !dst->outgoing_proxy) ||
+	    (src->ca_info && !dst->ca_info) ||
+	    (src->ssl_cert && !dst->ssl_cert) ||
+	    (src->ssl_key && !dst->ssl_key) || !dst->cookie || !dst->hdr) {
+		oauth2_http_call_ctx_free(log, dst);
+		return NULL;
+	}
+	return dst;
 }
 
 void oauth2_http_call_ctx_free(oauth2_log_t *log, oauth2_http_call_ctx_t *ctx)
@@ -707,9 +754,62 @@ end:
 	return;
 }
 
-_OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, timeout, int, integer)
-_OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, retries, int, integer)
-_OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, retry_interval, int, integer)
+bool oauth2_http_call_ctx_timeout_set(oauth2_log_t *log,
+				      oauth2_http_call_ctx_t *ctx, const int v)
+{
+	if (!ctx || v <= 0)
+		return false;
+	ctx->timeout = v;
+	return true;
+}
+
+bool oauth2_http_call_ctx_retries_set(oauth2_log_t *log,
+				      oauth2_http_call_ctx_t *ctx, const int v)
+{
+	if (!ctx || v < 0 || v == INT_MAX)
+		return false;
+	ctx->retries = v;
+	return true;
+}
+
+bool oauth2_http_call_ctx_retry_interval_set(oauth2_log_t *log,
+					     oauth2_http_call_ctx_t *ctx,
+					     const int v)
+{
+	if (!ctx || v < 0 || v > INT_MAX / 1000)
+		return false;
+	ctx->retry_interval = v;
+	return true;
+}
+
+bool oauth2_http_call_ctx_max_redirects_set(oauth2_log_t *log,
+					    oauth2_http_call_ctx_t *ctx,
+					    const int v)
+{
+	if (!ctx || v < 0)
+		return false;
+	ctx->max_redirects = v;
+	return true;
+}
+
+bool oauth2_http_call_ctx_max_response_bytes_set(oauth2_log_t *log,
+						 oauth2_http_call_ctx_t *ctx,
+						 const oauth2_uint_t v)
+{
+	if (!ctx || v == 0 || (size_t)v >= SIZE_MAX)
+		return false;
+	ctx->max_response_bytes = v;
+	return true;
+}
+
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, follow_redirects, bool, bln)
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_GET(http, call_ctx, timeout, int)
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_GET(http, call_ctx, retries, int)
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_GET(http, call_ctx, retry_interval, int)
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_GET(http, call_ctx, follow_redirects, bool)
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_GET(http, call_ctx, max_redirects, int)
+_OAUTH2_TYPE_IMPLEMENT_MEMBER_GET(http, call_ctx, max_response_bytes,
+				  oauth2_uint_t)
 _OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, ssl_verify, bool, bln)
 _OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, outgoing_proxy, char *, str)
 _OAUTH2_TYPE_IMPLEMENT_MEMBER_SET(http, call_ctx, ca_info, char *, str)
@@ -939,6 +1039,8 @@ typedef struct oauth2_http_curl_buf_t {
 	oauth2_log_t *log;
 	char *memory;
 	size_t size;
+	size_t max;
+	oauth2_http_call_error_t error;
 } oauth2_http_curl_buf_t;
 
 #define _OAUTH2_HTTP_CURL_BUF_MAX 1024 * 1024
@@ -946,20 +1048,18 @@ typedef struct oauth2_http_curl_buf_t {
 static size_t oauth2_http_curl_buf_write(void *contents, size_t size,
 					 size_t nmemb, void *userp)
 {
-	size_t realsize = size * nmemb, rc = 0;
+	size_t realsize, rc = 0;
 	oauth2_http_curl_buf_t *mem = (oauth2_http_curl_buf_t *)userp;
 
-	if (mem->size + realsize > _OAUTH2_HTTP_CURL_BUF_MAX) {
-		oauth2_error(mem->log,
-			     "HTTP response larger than maximum allowed "
-			     "size: current size=%ld, additional "
-			     "size=%ld, max=%d",
-			     mem->size, realsize, _OAUTH2_HTTP_CURL_BUF_MAX);
+	if ((size && nmemb > SIZE_MAX / size) ||
+	    ((realsize = size * nmemb) > mem->max - mem->size)) {
+		mem->error = OAUTH2_HTTP_CALL_RESPONSE_TOO_LARGE;
 		goto end;
 	}
 
 	char *newptr = oauth2_mem_alloc(mem->size + realsize + 1);
 	if (newptr == NULL) {
+		mem->error = OAUTH2_HTTP_CALL_INTERNAL_ERROR;
 		oauth2_error(
 		    mem->log,
 		    "memory allocation for new buffer of %ld bytes failed",
@@ -967,7 +1067,8 @@ static size_t oauth2_http_curl_buf_write(void *contents, size_t size,
 		goto end;
 	}
 
-	memcpy(newptr, mem->memory, mem->size);
+	if (mem->size)
+		memcpy(newptr, mem->memory, mem->size);
 	memcpy(&(newptr[mem->size]), contents, realsize);
 	mem->size += realsize;
 	oauth2_mem_free(mem->memory);
@@ -1006,9 +1107,10 @@ end:
 	return rc;
 }
 
-bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
-		      oauth2_http_call_ctx_t *ctx, char **response,
-		      oauth2_http_status_code_t *status_code)
+bool oauth2_http_call_ex(oauth2_log_t *log, const char *url, const char *data,
+			 oauth2_http_call_ctx_t *ctx, char **response,
+			 oauth2_http_status_code_t *status_code,
+			 oauth2_http_call_result_t *result)
 {
 	bool rc = false;
 	char *str = NULL;
@@ -1024,6 +1126,16 @@ bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
 	buf.log = log;
 	buf.memory = NULL;
 	buf.size = 0;
+	buf.max = ctx ? ctx->max_response_bytes : _OAUTH2_HTTP_CURL_BUF_MAX;
+	buf.error = OAUTH2_HTTP_CALL_OK;
+	if (response)
+		*response = NULL;
+	if (status_code)
+		*status_code = 0;
+	if (result) {
+		result->error = OAUTH2_HTTP_CALL_INTERNAL_ERROR;
+		result->status_code = 0;
+	}
 
 	oauth2_debug(log, "enter: url=%s, data=%s, ctx=%s", url,
 		     data ? data : "(null)", _oauth2_http_call_ctx2s(log, ctx));
@@ -1045,11 +1157,16 @@ bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
 	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, err);
-	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-	curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+	if (curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION,
+			     ctx ? (long)ctx->follow_redirects : 1L) !=
+		CURLE_OK ||
+	    curl_easy_setopt(curl, CURLOPT_MAXREDIRS,
+			     ctx ? (long)ctx->max_redirects : 5L) != CURLE_OK)
+		goto end;
 
-	if (ctx)
-		curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)ctx->timeout);
+	if (ctx && curl_easy_setopt(curl, CURLOPT_TIMEOUT,
+				    (long)ctx->timeout) != CURLE_OK)
+		goto end;
 
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
 			 oauth2_http_curl_buf_write);
@@ -1146,6 +1263,10 @@ bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
 	oauth2_debug(log, "looping: i=%d, retries=%d", i, retries);
 
 	for (i = 0; i <= retries; i++) {
+		/* A failed partial transfer must not prefix the next response.
+		 */
+		buf.size = 0;
+		buf.error = OAUTH2_HTTP_CALL_OK;
 		oauth2_debug(log, "looping: i=%d, retries=%d", i, retries);
 		errornum = curl_easy_perform(curl);
 		if (errornum == CURLE_OK) {
@@ -1153,6 +1274,7 @@ bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
 			break;
 		}
 		if (errornum == CURLE_OPERATION_TIMEDOUT) {
+			buf.error = OAUTH2_HTTP_CALL_TIMEOUT;
 			/* in case of a request/transfer timeout (which includes
 			 * the connect timeout) we'll not retry */
 			oauth2_error(log,
@@ -1166,7 +1288,14 @@ bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
 				*status_code = 504;
 			break;
 		}
-		if (errornum == CURLE_WRITE_ERROR) {
+		if (errornum == CURLE_TOO_MANY_REDIRECTS) {
+			buf.error = OAUTH2_HTTP_CALL_REDIRECT_LIMIT;
+			break;
+		}
+		if (errornum == CURLE_WRITE_ERROR ||
+		    buf.error != OAUTH2_HTTP_CALL_OK) {
+			if (buf.error == OAUTH2_HTTP_CALL_OK)
+				buf.error = OAUTH2_HTTP_CALL_INTERNAL_ERROR;
 			/* the response exceeded the buffer maximum (see
 			 * oauth2_http_curl_buf_write); retrying would only
 			 * overflow it again */
@@ -1196,13 +1325,29 @@ bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
 	oauth2_debug(log, "HTTP response code=%ld", response_code);
 	if (status_code)
-		*status_code = (oauth2_uint_t)response_code;
+		*status_code = (errornum == CURLE_OPERATION_TIMEDOUT)
+				   ? 504
+				   : (oauth2_uint_t)response_code;
+	if (result) {
+		result->status_code = (oauth2_uint_t)response_code;
+		result->error = rc ? OAUTH2_HTTP_CALL_OK
+				   : (buf.error != OAUTH2_HTTP_CALL_OK
+					  ? buf.error
+					  : OAUTH2_HTTP_CALL_TRANSPORT_ERROR);
+	}
 
 	if (rc == false)
 		goto end;
 
 	*response = oauth2_mem_alloc(buf.size + 1);
-	strncpy(*response, buf.memory, buf.size);
+	if (*response == NULL) {
+		rc = false;
+		if (result)
+			result->error = OAUTH2_HTTP_CALL_INTERNAL_ERROR;
+		goto end;
+	}
+	if (buf.size)
+		memcpy(*response, buf.memory, buf.size);
 	(*response)[buf.size] = '\0';
 
 end:
@@ -1220,10 +1365,11 @@ end:
 	return rc;
 }
 
-bool oauth2_http_get(oauth2_log_t *log, const char *url,
-		     const oauth2_nv_list_t *params,
-		     oauth2_http_call_ctx_t *ctx, char **response,
-		     oauth2_http_status_code_t *status_code)
+bool oauth2_http_get_ex(oauth2_log_t *log, const char *url,
+			const oauth2_nv_list_t *params,
+			oauth2_http_call_ctx_t *ctx, char **response,
+			oauth2_http_status_code_t *status_code,
+			oauth2_http_call_result_t *result)
 {
 	bool rc = false;
 	char *query_url = NULL;
@@ -1231,7 +1377,8 @@ bool oauth2_http_get(oauth2_log_t *log, const char *url,
 	oauth2_debug(log, "enter: %s", url);
 
 	query_url = oauth2_http_url_query_encode(log, url, params);
-	rc = oauth2_http_call(log, query_url, NULL, ctx, response, status_code);
+	rc = oauth2_http_call_ex(log, query_url, NULL, ctx, response,
+				 status_code, result);
 
 	if (query_url)
 		oauth2_mem_free(query_url);
@@ -1241,10 +1388,11 @@ bool oauth2_http_get(oauth2_log_t *log, const char *url,
 	return rc;
 }
 
-bool oauth2_http_post_form(oauth2_log_t *log, const char *url,
-			   const oauth2_nv_list_t *params,
-			   oauth2_http_call_ctx_t *ctx, char **response,
-			   oauth2_http_status_code_t *status_code)
+bool oauth2_http_post_form_ex(oauth2_log_t *log, const char *url,
+			      const oauth2_nv_list_t *params,
+			      oauth2_http_call_ctx_t *ctx, char **response,
+			      oauth2_http_status_code_t *status_code,
+			      oauth2_http_call_result_t *result)
 {
 	bool rc = false;
 	char *data = NULL;
@@ -1253,7 +1401,8 @@ bool oauth2_http_post_form(oauth2_log_t *log, const char *url,
 
 	oauth2_http_call_ctx_content_type_set(log, ctx,
 					      OAUTH2_CONTENT_TYPE_FORM_ENCODED);
-	rc = oauth2_http_call(log, url, data, ctx, response, status_code);
+	rc = oauth2_http_call_ex(log, url, data, ctx, response, status_code,
+				 result);
 
 	if (data)
 		oauth2_mem_free(data);
@@ -1261,10 +1410,11 @@ bool oauth2_http_post_form(oauth2_log_t *log, const char *url,
 	return rc;
 }
 
-bool oauth2_http_post_json(oauth2_log_t *log, const char *url,
-			   const json_t *json, oauth2_http_call_ctx_t *ctx,
-			   char **response,
-			   oauth2_http_status_code_t *status_code)
+bool oauth2_http_post_json_ex(oauth2_log_t *log, const char *url,
+			      const json_t *json, oauth2_http_call_ctx_t *ctx,
+			      char **response,
+			      oauth2_http_status_code_t *status_code,
+			      oauth2_http_call_result_t *result)
 {
 	bool rc = false;
 	char *json_str = NULL;
@@ -1274,12 +1424,48 @@ bool oauth2_http_post_json(oauth2_log_t *log, const char *url,
 
 	oauth2_http_call_ctx_content_type_set(log, ctx,
 					      OAUTH2_CONTENT_TYPE_JSON);
-	rc = oauth2_http_call(log, url, json_str, ctx, response, status_code);
+	rc = oauth2_http_call_ex(log, url, json_str, ctx, response, status_code,
+				 result);
 
 	if (json_str)
 		oauth2_mem_free(json_str);
 
 	return rc;
+}
+
+bool oauth2_http_call(oauth2_log_t *log, const char *url, const char *data,
+		      oauth2_http_call_ctx_t *ctx, char **response,
+		      oauth2_http_status_code_t *status_code)
+{
+	return oauth2_http_call_ex(log, url, data, ctx, response, status_code,
+				   NULL);
+}
+
+bool oauth2_http_get(oauth2_log_t *log, const char *url,
+		     const oauth2_nv_list_t *params,
+		     oauth2_http_call_ctx_t *ctx, char **response,
+		     oauth2_http_status_code_t *status_code)
+{
+	return oauth2_http_get_ex(log, url, params, ctx, response, status_code,
+				  NULL);
+}
+
+bool oauth2_http_post_form(oauth2_log_t *log, const char *url,
+			   const oauth2_nv_list_t *params,
+			   oauth2_http_call_ctx_t *ctx, char **response,
+			   oauth2_http_status_code_t *status_code)
+{
+	return oauth2_http_post_form_ex(log, url, params, ctx, response,
+					status_code, NULL);
+}
+
+bool oauth2_http_post_json(oauth2_log_t *log, const char *url,
+			   const json_t *json, oauth2_http_call_ctx_t *ctx,
+			   char **response,
+			   oauth2_http_status_code_t *status_code)
+{
+	return oauth2_http_post_json_ex(log, url, json, ctx, response,
+					status_code, NULL);
 }
 
 /*

@@ -311,12 +311,18 @@ static bool _oauth2_introspect_verify(oauth2_log_t *log,
 				      oauth2_introspect_ctx_t *ctx,
 				      const char *token, json_t **json_payload,
 				      char **s_payload,
-				      oauth2_http_status_code_t *status_code)
+				      oauth2_http_status_code_t *status_code,
+				      oauth2_token_verify_result_t *result)
 {
 	bool rc = false;
 	oauth2_nv_list_t *params = NULL;
 	oauth2_http_call_ctx_t *http_ctx = NULL;
 	json_t *active = NULL;
+	oauth2_http_status_code_t local_status = 0;
+	oauth2_http_call_result_t http;
+	if (!status_code)
+		status_code = &local_status;
+	result->kind = OAUTH2_TOKEN_VERIFY_INTERNAL_ERROR;
 
 	oauth2_debug(log, "enter");
 
@@ -324,13 +330,9 @@ static bool _oauth2_introspect_verify(oauth2_log_t *log,
 	if (http_ctx == NULL)
 		goto end;
 
-	if (oauth2_http_call_ctx_ssl_verify_set(
-		log, http_ctx,
-		oauth2_cfg_endpoint_get_ssl_verify(ctx->endpoint)) == false)
+	if (!oauth2_cfg_endpoint_http_call_ctx_set(log, ctx->endpoint,
+						   http_ctx))
 		goto end;
-	oauth2_http_call_ctx_outgoing_proxy_set(
-	    log, http_ctx,
-	    oauth2_cfg_endpoint_get_outgoing_proxy(ctx->endpoint));
 
 	params = oauth2_nv_list_init(log);
 	if (params == NULL)
@@ -350,18 +352,25 @@ static bool _oauth2_introspect_verify(oauth2_log_t *log,
 		params) == false)
 		goto end;
 
-	if (oauth2_http_post_form(
-		log, oauth2_cfg_endpoint_get_url(ctx->endpoint), params,
-		http_ctx, s_payload, status_code) == false)
+	rc = oauth2_http_post_form_ex(
+	    log, oauth2_cfg_endpoint_get_url(ctx->endpoint), params, http_ctx,
+	    s_payload, status_code, &http);
+	oauth2_token_verify_result_http_set(result, &http);
+	if (!rc)
 		goto end;
+	rc = false;
 
-	if ((status_code) && ((*status_code < 200) || (*status_code >= 300))) {
-		rc = false;
+	if ((*status_code < 200) || (*status_code >= 300)) {
+		result->kind = OAUTH2_TOKEN_VERIFY_HTTP_ERROR;
 		goto end;
 	}
 
-	if (oauth2_json_decode_check_error(log, *s_payload, json_payload) ==
-	    false)
+	result->kind = OAUTH2_TOKEN_VERIFY_MALFORMED_RESPONSE;
+	json_error_t json_error;
+	*json_payload =
+	    json_loads(*s_payload, JSON_REJECT_DUPLICATES, &json_error);
+	if (!*json_payload || !json_is_object(*json_payload) ||
+	    oauth2_json_check_error(log, *json_payload))
 		goto end;
 
 	active = json_object_get(*json_payload, OAUTH2_INTROSPECT_CLAIM_ACTIVE);
@@ -379,6 +388,7 @@ static bool _oauth2_introspect_verify(oauth2_log_t *log,
 			     OAUTH2_INTROSPECT_CLAIM_ACTIVE);
 		goto end;
 	}
+	result->kind = OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED;
 
 	if (json_is_true(active) == false) {
 		oauth2_error(
@@ -420,7 +430,8 @@ end:
 static bool _oauth2_introspect_verify_callback(
     oauth2_log_t *log, oauth2_cfg_token_verify_t *verify, const char *token,
     json_t **json_payload, char **s_payload,
-    oauth2_http_status_code_t *status_code)
+    oauth2_http_status_code_t *status_code,
+    oauth2_token_verify_result_t *result)
 {
 	bool rc = false;
 	oauth2_introspect_ctx_t *ctx = NULL;
@@ -432,7 +443,7 @@ static bool _oauth2_introspect_verify_callback(
 	ctx = (oauth2_introspect_ctx_t *)verify->ctx->ptr;
 
 	rc = _oauth2_introspect_verify(log, ctx, token, json_payload, s_payload,
-				       status_code);
+				       status_code, result);
 
 end:
 
@@ -523,7 +534,8 @@ _OAUTH2_CFG_CTX_FUNCS(oauth2_metadata_ctx)
 static bool _oauth2_metadata_verify_callback(
     oauth2_log_t *log, oauth2_cfg_token_verify_t *verify, const char *token,
     json_t **json_payload, char **s_payload,
-    oauth2_http_status_code_t *status_code)
+    oauth2_http_status_code_t *status_code,
+    oauth2_token_verify_result_t *result)
 {
 	bool rc = false;
 	oauth2_metadata_ctx_t *ptr = NULL;
@@ -542,11 +554,12 @@ static bool _oauth2_metadata_verify_callback(
 
 	ptr = (oauth2_metadata_ctx_t *)verify->ctx->ptr;
 
-	response =
-	    oauth2_jose_resolve_from_uri(log, ptr->metadata_uri, &refresh);
+	response = oauth2_jose_resolve_from_uri_ex(log, ptr->metadata_uri,
+						   &refresh, result);
 	if (response == NULL)
 		goto end;
 
+	result->kind = OAUTH2_TOKEN_VERIFY_MALFORMED_RESPONSE;
 	if (oauth2_json_decode_object(log, response, &json_metadata) == false)
 		goto end;
 
@@ -612,9 +625,11 @@ jwks_uri:
 		oauth2_cfg_endpoint_set_url(
 		    jwks_uri_verify->jwks_provider->jwks_uri->endpoint,
 		    jwks_uri);
-		rc = oauth2_jose_jwt_verify(log, jwks_uri_verify, token,
-					    json_payload, s_payload);
+		rc = oauth2_jose_jwt_verify_ex(log, jwks_uri_verify, token,
+					       json_payload, s_payload, result);
 		if (rc == true)
+			goto end;
+		if (result->kind != OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED)
 			goto end;
 	}
 
@@ -642,7 +657,7 @@ introspect:
 					    introspection_uri);
 		rc = _oauth2_introspect_verify(log, introspect_ctx, token,
 					       json_payload, s_payload,
-					       status_code);
+					       status_code, result);
 		if (rc == true)
 			goto end;
 	}
@@ -889,23 +904,66 @@ end:
 	return rc;
 }
 
-bool oauth2_token_verify(oauth2_log_t *log, oauth2_http_request_t *request,
-			 oauth2_cfg_token_verify_t *verify, const char *token,
-			 json_t **json_payload,
-			 oauth2_http_status_code_t *status_code)
+void oauth2_token_verify_result_http_set(oauth2_token_verify_result_t *result,
+					 const oauth2_http_call_result_t *http)
+{
+	result->status_code = http->status_code;
+	result->http_error = http->error;
+	switch (http->error) {
+	case OAUTH2_HTTP_CALL_OK:
+		result->kind = OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED;
+		break;
+	case OAUTH2_HTTP_CALL_TRANSPORT_ERROR:
+		result->kind = OAUTH2_TOKEN_VERIFY_TRANSPORT_ERROR;
+		break;
+	case OAUTH2_HTTP_CALL_TIMEOUT:
+		result->kind = OAUTH2_TOKEN_VERIFY_TIMEOUT;
+		break;
+	case OAUTH2_HTTP_CALL_RESPONSE_TOO_LARGE:
+		result->kind = OAUTH2_TOKEN_VERIFY_RESPONSE_TOO_LARGE;
+		break;
+	case OAUTH2_HTTP_CALL_REDIRECT_LIMIT:
+		result->kind = OAUTH2_TOKEN_VERIFY_REDIRECT_LIMIT;
+		break;
+	default:
+		result->kind = OAUTH2_TOKEN_VERIFY_INTERNAL_ERROR;
+	}
+}
+
+bool oauth2_token_verify_ex(oauth2_log_t *log, oauth2_http_request_t *request,
+			    oauth2_cfg_token_verify_t *verify,
+			    const char *token, json_t **json_payload,
+			    oauth2_http_status_code_t *status_code,
+			    oauth2_token_verify_result_t *result)
 {
 
 	bool rc = false;
 	oauth2_cfg_token_verify_t *ptr = NULL;
 	char *s_payload = NULL;
+	oauth2_token_verify_result_t local_result;
+	oauth2_token_verify_result_t failure = {
+	    OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED, 0, OAUTH2_HTTP_CALL_OK};
+	oauth2_http_status_code_t local_status = 0;
+	if (!status_code)
+		status_code = &local_status;
+	*status_code = 0;
+	if (!result)
+		result = &local_result;
+	*result = failure;
+	if (json_payload)
+		*json_payload = NULL;
 
 	oauth2_debug(log, "enter");
 
-	if ((verify == NULL) || (token == NULL))
+	if ((verify == NULL) || (token == NULL) || (json_payload == NULL))
 		goto end;
 
 	ptr = verify;
 	while (ptr && ptr->callback) {
+		*result = (oauth2_token_verify_result_t){
+		    OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED, 0,
+		    OAUTH2_HTTP_CALL_OK};
+		*status_code = 0;
 
 		oauth2_cache_get(log, ptr->cache, token, &s_payload);
 		if ((s_payload) &&
@@ -927,19 +985,40 @@ bool oauth2_token_verify(oauth2_log_t *log, oauth2_http_request_t *request,
 			oauth2_mem_free(s_payload);
 			s_payload = NULL;
 		}
+		if (s_payload) {
+			oauth2_mem_free(s_payload);
+			s_payload = NULL;
+		}
 
 		if (ptr->callback(log, ptr, token, json_payload, &s_payload,
-				  status_code)) {
+				  status_code, result)) {
 			oauth2_cache_set(log, ptr->cache, token, s_payload,
 					 ptr->expiry_s);
 			rc = true;
 			break;
+		}
+		/* Keep endpoint failure evidence if another configured method
+		 * merely rejects the credential. A successful method still
+		 * wins. */
+		if (result->kind != OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED)
+			failure = *result;
+		if (*json_payload) {
+			json_decref(*json_payload);
+			*json_payload = NULL;
+		}
+		if (s_payload) {
+			oauth2_mem_free(s_payload);
+			s_payload = NULL;
 		}
 
 		ptr = ptr->next;
 	}
 
 	if (rc == true) {
+		failure = (oauth2_token_verify_result_t){
+		    OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED, 0,
+		    OAUTH2_HTTP_CALL_OK};
+		result->kind = OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED;
 		if (ptr->type == OAUTH2_TOKEN_VERIFY_DPOP) {
 			rc = oauth2_dpop_token_verify(log, &ptr->dpop, request,
 						      token, *json_payload);
@@ -954,6 +1033,20 @@ bool oauth2_token_verify(oauth2_log_t *log, oauth2_http_request_t *request,
 	}
 
 end:
+	if (rc)
+		result->kind = OAUTH2_TOKEN_VERIFY_SUCCESS;
+	else if (failure.kind != OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED)
+		*result = failure;
+	if (!rc) {
+		if (result->kind == OAUTH2_TOKEN_VERIFY_TIMEOUT ||
+		    result->kind == OAUTH2_TOKEN_VERIFY_REFRESH_TIMEOUT)
+			*status_code = 504;
+		else if (result->kind == OAUTH2_TOKEN_VERIFY_HTTP_ERROR)
+			*status_code = result->status_code;
+		else if (result->kind !=
+			 OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED)
+			*status_code = 502;
+	}
 
 	// a rejected token must always come with an HTTP error status code:
 	// the local (JWT) verification callbacks don't set one at all, and an
@@ -971,6 +1064,15 @@ end:
 		     status_code ? (int)*status_code : 0);
 
 	return rc;
+}
+
+bool oauth2_token_verify(oauth2_log_t *log, oauth2_http_request_t *request,
+			 oauth2_cfg_token_verify_t *verify, const char *token,
+			 json_t **json_payload,
+			 oauth2_http_status_code_t *status_code)
+{
+	return oauth2_token_verify_ex(log, request, verify, token, json_payload,
+				      status_code, NULL);
 }
 
 /*

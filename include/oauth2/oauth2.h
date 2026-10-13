@@ -206,6 +206,31 @@ bool oauth2_http_ctx_auth_add(oauth2_log_t *log, oauth2_http_call_ctx_t *ctx,
 			      const oauth2_cfg_endpoint_auth_t *auth,
 			      oauth2_nv_list_t *params);
 
+typedef enum oauth2_token_verify_result_kind_t {
+	OAUTH2_TOKEN_VERIFY_SUCCESS,
+	OAUTH2_TOKEN_VERIFY_CREDENTIAL_REJECTED,
+	OAUTH2_TOKEN_VERIFY_TRANSPORT_ERROR,
+	OAUTH2_TOKEN_VERIFY_TIMEOUT,
+	OAUTH2_TOKEN_VERIFY_HTTP_ERROR,
+	OAUTH2_TOKEN_VERIFY_MALFORMED_RESPONSE,
+	OAUTH2_TOKEN_VERIFY_RESPONSE_TOO_LARGE,
+	OAUTH2_TOKEN_VERIFY_REDIRECT_LIMIT,
+	OAUTH2_TOKEN_VERIFY_KEY_LIMIT,
+	OAUTH2_TOKEN_VERIFY_REFRESH_TIMEOUT,
+	OAUTH2_TOKEN_VERIFY_REFRESH_THROTTLED,
+	OAUTH2_TOKEN_VERIFY_INTERNAL_ERROR
+} oauth2_token_verify_result_kind_t;
+
+/** Per-call result. status_code preserves the endpoint status even for a
+ * timeout/oversize response after headers; 0 means local verification, cache
+ * hit or no headers. The legacy status output remains normalized for the
+ * caller. No strings, global/thread-local error state or borrowed memory. */
+typedef struct oauth2_token_verify_result_t {
+	oauth2_token_verify_result_kind_t kind;
+	oauth2_http_status_code_t status_code;
+	oauth2_http_call_error_t http_error;
+} oauth2_token_verify_result_t;
+
 /**
  * @brief Verify an OAuth 2.x access token.
  *
@@ -276,5 +301,15 @@ bool oauth2_token_verify(oauth2_log_t *log, oauth2_http_request_t *request,
 			 oauth2_cfg_token_verify_t *verify, const char *token,
 			 json_t **json_payload,
 			 oauth2_http_status_code_t *status_code);
+
+/** Extended verification with optional per-call endpoint evidence. A 401
+ * received from an endpoint is HTTP_ERROR, not CREDENTIAL_REJECTED. A later
+ * successful configured method wins; if all fail, endpoint failures take
+ * precedence over ordinary credential rejection. */
+bool oauth2_token_verify_ex(oauth2_log_t *log, oauth2_http_request_t *request,
+			    oauth2_cfg_token_verify_t *verify,
+			    const char *token, json_t **json_payload,
+			    oauth2_http_status_code_t *status_code,
+			    oauth2_token_verify_result_t *result);
 
 #endif /* _OAUTH2_H_ */
